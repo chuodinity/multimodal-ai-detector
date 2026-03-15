@@ -2,9 +2,12 @@ import streamlit as st
 import torch
 import torch.nn as nn
 from PIL import Image
-from transformers import AutoTokenizer, AutoConfig, AutoModel, PreTrainedModel, ViTImageProcessor, ViTForImageClassification
+from transformers import (
+    AutoTokenizer, AutoConfig, AutoModel, PreTrainedModel, 
+    pipeline, ViTImageProcessor, ViTForImageClassification
+)
 
-# --- MODEL DEFINITION FOR DESKLIB TEXT DETECTOR ---
+# --- DESKLIB TEXT DETECTOR ARCHITECTURE ---
 class DesklibAIDetectionModel(PreTrainedModel):
     config_class = AutoConfig
     def __init__(self, config):
@@ -16,74 +19,77 @@ class DesklibAIDetectionModel(PreTrainedModel):
     def forward(self, input_ids, attention_mask=None):
         outputs = self.model(input_ids, attention_mask=attention_mask)
         last_hidden_state = outputs[0]
-        # Mean pooling
         input_mask_expanded = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
-        sum_embeddings = torch.sum(last_hidden_state * input_mask_expanded, 1)
-        sum_mask = input_mask_expanded.sum(1)
-        sum_mask = torch.clamp(sum_mask, min=1e-9)
-        mean_pooled = sum_embeddings / sum_mask
+        mean_pooled = torch.sum(last_hidden_state * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
         return self.classifier(mean_pooled)
 
-# --- LOAD MODELS ---
+# --- LOAD SPECIALIZED MODELS ---
 @st.cache_resource
-def load_models():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def load_assets():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Text Model
-    text_model_name = "desklib/ai-text-detector-v1.01"
-    text_tokenizer = AutoTokenizer.from_pretrained(text_model_name)
-    text_model = DesklibAIDetectionModel.from_pretrained(text_model_name).to(device)
-    text_model.eval()
-
-    # Image Model (ViT)
-    image_model_name = "google/vit-base-patch16-224"
-    image_processor = ViTImageProcessor.from_pretrained(image_model_name)
-    image_model = ViTForImageClassification.from_pretrained(image_model_name).to(device)
-    image_model.eval()
+    # Text Model (Desklib)
+    text_model_id = "desklib/ai-text-detector-v1.01"
+    t_tokenizer = AutoTokenizer.from_pretrained(text_model_id)
+    t_model = DesklibAIDetectionModel.from_pretrained(text_model_id).to(device)
     
-    return text_tokenizer, text_model, image_processor, image_model, device
+    # Image Model (Specialized ViT for AIGC)
+    img_model_id = "capcheck/ai-image-detection"
+    img_pipe = pipeline("image-classification", model=img_model_id, device=0 if device == "cuda" else -1)
+    
+    return t_tokenizer, t_model, img_pipe, device
 
-text_tokenizer, text_model, image_processor, image_model, device = load_models()
+tokenizer, text_model, img_pipeline, device = load_assets()
 
-# --- UI SETUP ---
-st.set_page_config(page_title="Multimodal AI Detector", layout="centered")
-st.title("🛡️ Multimodal AI Content Detector")
-st.write("Upload an image and text to check for AI generation using Late Fusion.")
+# --- UI INTERFACE ---
+st.set_page_config(page_title="AIGC Late Fusion Detector", layout="wide")
+st.title("🛡️ Specialized Multimodal AIGC Detector")
 
-# Input Section
-uploaded_image = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
-user_text = st.text_area("Enter Text Content", height=150)
+col_in, col_out = st.columns([1, 1])
 
-if st.button("Analyze Content") and uploaded_image and user_text:
-    with st.spinner("Processing..."):
-        # 1. Text Inference
-        inputs = text_tokenizer(user_text, return_tensors="pt", truncation=True, padding=True, max_length=512).to(device)
+with col_in:
+    st.subheader("Input Content")
+    uploaded_file = st.file_uploader("Upload Image", type=["jpg", "jpeg", "png"])
+    user_text = st.text_area("Input Text", placeholder="Paste article or caption...", height=200)
+    
+    if uploaded_file:
+        st.image(Image.open(uploaded_file), caption="Uploaded Image", use_container_width=True)
+
+# --- PROCESSING ---
+if st.button("Run Multi-Modal Detection") and uploaded_file and user_text:
+    with st.spinner("Analyzing artifacts in text and pixels..."):
+        # 1. Text Score (Logit -> Sigmoid)
+        t_inputs = tokenizer(user_text, return_tensors="pt", truncation=True, padding=True).to(device)
         with torch.no_grad():
-            logit = text_model(inputs['input_ids'], inputs['attention_mask'])
-            p_text = torch.sigmoid(logit).item()
+            t_logit = text_model(t_inputs['input_ids'], t_inputs['attention_mask'])
+            p_text = torch.sigmoid(t_logit).item()
 
-        # 2. Image Inference
-        image = Image.open(uploaded_image).convert("RGB")
-        inputs = image_processor(images=image, return_tensors="pt").to(device)
-        with torch.no_grad():
-            outputs = image_model(**inputs)
-            # Interpret top class (Note: Fine-tuning ViT on your specific dataset is recommended)
-            p_image = torch.softmax(outputs.logits, dim=-1).max().item()
+        # 2. Image Score (AIGC ViT)
+        img_results = img_pipeline(Image.open(uploaded_file))
+        # Find the score for 'Fake' (AI-generated)
+        p_image = next(item['score'] for item in img_results if item['label'] == 'Fake')
 
         # 3. Late Fusion (Weighted Average)
-        # We give more weight (0.7) to text as it's typically more reliable in these benchmarks
-        fused_score = (0.7 * p_text) + (0.3 * p_image)
-        
-        # --- CONCLUSION ---
-        st.divider()
-        st.subheader("Final Conclusion")
-        
-        confidence_label = "HIGH" if fused_score > 0.8 or fused_score < 0.2 else "MODERATE"
-        verdict = "AI-GENERATED" if fused_score > 0.5 else "HUMAN-WRITTEN"
-        
-        color = "red" if verdict == "AI-GENERATED" else "green"
-        st.markdown(f"The system concludes this content is likely **:{color}[{verdict}]**.")
-        st.metric("Confidence Score", f"{fused_score:.2%}", delta=f"Reliability: {confidence_label}")
-        
-        # Breakdown Visualization
-        st.bar_chart({"Text Score": p_text, "Image Score": p_image, "Combined": fused_score})
+        # Using 0.5/0.5 for balanced multimodal detection
+        fused_score = (0.5 * p_text) + (0.5 * p_image)
+
+        with col_out:
+            st.subheader("System Verdict")
+            
+            # Classification logic
+            verdict = "AI-GENERATED" if fused_score > 0.5 else "HUMAN-ORIGIN"
+            color = "red" if verdict == "AI-GENERATED" else "green"
+            
+            st.markdown(f"### Result: :{color}[{verdict}]")
+            st.metric("Aggregate Confidence", f"{fused_score:.2%}")
+            
+            # Visual Breakdown
+            st.write("**Modality Breakdown:**")
+            st.progress(p_text, text=f"Text AI Probability: {p_text:.1%}")
+            st.progress(p_image, text=f"Image AI Probability: {p_image:.1%}")
+            
+            # Brief Forensic Note
+            if fused_score > 0.5:
+                st.warning("Conclusion: High cross-modal artifact detection. The content shows patterns consistent with synthetic generation.")
+            else:
+                st.success("Conclusion: Low probability of AI generation. Features align with natural human patterns.")
