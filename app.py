@@ -10,11 +10,16 @@ from transformers import (
 # --- DESKLIB TEXT DETECTOR ARCHITECTURE ---
 class DesklibAIDetectionModel(PreTrainedModel):
     config_class = AutoConfig
+    # NEW: Add this line to satisfy the latest Transformers internal checks
+    _tied_weights_keys = [] 
+
     def __init__(self, config):
         super().__init__(config)
         self.model = AutoModel.from_config(config)
         self.classifier = nn.Linear(config.hidden_size, 1)
-        self.init_weights()
+        
+        # NEW: Always call post_init at the end of __init__
+        self.post_init()
 
     def forward(self, input_ids, attention_mask=None):
         outputs = self.model(input_ids, attention_mask=attention_mask)
