@@ -19,6 +19,10 @@ class DesklibAIDetectionModel(PreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, 1)
         
         # NEW: Always call post_init at the end of __init__
+        self._tied_weights_keys = []
+        if not hasattr(self, "_keys_to_ignore_on_save"):
+            self._keys_to_ignore_on_save = []
+            
         self.post_init()
 
     def forward(self, input_ids, attention_mask=None):
