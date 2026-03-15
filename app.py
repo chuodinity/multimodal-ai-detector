@@ -75,8 +75,8 @@ if st.button("Run Multi-Modal Detection") and uploaded_file and user_text:
 
         # 2. Image Score (AIGC ViT)
         img_results = img_pipeline(Image.open(uploaded_file))
-        # Find the score for 'Fake' (AI-generated)
-        p_image = next(item['score'] for item in img_results if item['label'] == 'Fake')
+        # Find the score for 'FAKE' (AI-generated), case-insensitive, with safe fallback
+        p_image = next((item['score'] for item in img_results if item['label'].upper() == 'FAKE'), 0.0)
 
         # 3. Late Fusion (Weighted Average)
         # Using 0.5/0.5 for balanced multimodal detection
