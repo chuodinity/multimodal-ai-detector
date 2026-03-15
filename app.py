@@ -11,7 +11,7 @@ from transformers import (
 class DesklibAIDetectionModel(PreTrainedModel):
     config_class = AutoConfig
     # NEW: Add this line to satisfy the latest Transformers internal checks
-    _tied_weights_keys = [] 
+    _tied_weights_keys = {}
 
     def __init__(self, config):
         super().__init__(config)
@@ -19,7 +19,7 @@ class DesklibAIDetectionModel(PreTrainedModel):
         self.classifier = nn.Linear(config.hidden_size, 1)
         
         # NEW: Always call post_init at the end of __init__
-        self._tied_weights_keys = []
+        self._tied_weights_keys = {}
         if not hasattr(self, "_keys_to_ignore_on_save"):
             self._keys_to_ignore_on_save = []
             
